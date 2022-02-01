@@ -68,11 +68,12 @@
 #define UBX_DEBUG(...)        {/*GPS_WARN(__VA_ARGS__);*/}
 
 GPSDriverUBX::GPSDriverUBX(Interface gpsInterface, GPSCallbackPtr callback, void *callback_user,
-			   sensor_gps_s *gps_position, satellite_info_s *satellite_info, uint8_t dynamic_model,
-			   float heading_offset, UBXMode mode) :
+			   sensor_gps_s *gps_position, sensor_gps_relative_s *gps_position_relative, satellite_info_s *satellite_info,
+			   uint8_t dynamic_model, float heading_offset, UBXMode mode) :
 	GPSBaseStationSupport(callback, callback_user),
 	_interface(gpsInterface),
 	_gps_position(gps_position),
+	_gps_position_relative(gps_position_relative),
 	_satellite_info(satellite_info),
 	_dyn_model(dynamic_model),
 	_mode(mode),
@@ -2009,32 +2010,58 @@ GPSDriverUBX::payloadRxDone()
 	case UBX_MSG_NAV_RELPOSNED:
 		UBX_TRACE_RXMSG("Rx NAV-RELPOSNED");
 
-		if ((_mode == UBXMode::RoverWithMovingBase) || (_mode == UBXMode::RoverWithMovingBaseUART1)) {
-			float heading = _buf.payload_rx_nav_relposned.relPosHeading * 1e-5f;
-			float heading_acc = _buf.payload_rx_nav_relposned.accHeading * 1e-5f;
-			float rel_length = _buf.payload_rx_nav_relposned.relPosLength + _buf.payload_rx_nav_relposned.relPosHPLength * 1e-2f;
-			float rel_length_acc = _buf.payload_rx_nav_relposned.accLength * 1e-2f;
-			bool heading_valid = _buf.payload_rx_nav_relposned.flags & (1 << 8);
-			bool rel_pos_valid = _buf.payload_rx_nav_relposned.flags & (1 << 2);
-			(void)rel_length_acc;
+		if (_gps_position_relative && ((_mode == UBXMode::RoverWithMovingBase)
+					       || (_mode == UBXMode::RoverWithMovingBaseUART1))) {
 
-			if (heading_valid && rel_pos_valid && rel_length < 1000.f) { // validity & sanity checks
-				heading *= M_PI_F / 180.0f; // deg to rad, now in range [0, 2pi]
-				heading -= _heading_offset; // range: [-pi, 3pi]
+			_gps_position_relative->timestamp_sample = gps_absolute_time(); // TODO: delay estimate
 
-				if (heading > M_PI_F) {
-					heading -= 2.f * M_PI_F; // final range is [-pi, pi]
-				}
+			// _gps_position_relative.time_utc_usec // todo: iTOW ms GPS time of week of the navigation epoch.
+			_gps_position_relative->reference_stations_id = _buf.payload_rx_nav_relposned.refStationId;
 
-				_gps_position->heading = heading;
+			// relPosN + (relPosHPN * 1e-2), relPosHPN is 0.1 mm
+			_gps_position_relative->position[0] = (_buf.payload_rx_nav_relposned.relPosN + _buf.payload_rx_nav_relposned.relPosHPN * 1e-2f) * 1e-2f; // cm -> m
+			_gps_position_relative->position[1] = (_buf.payload_rx_nav_relposned.relPosE + _buf.payload_rx_nav_relposned.relPosHPE * 1e-2f) * 1e-2f; // cm -> m
+			_gps_position_relative->position[2] = (_buf.payload_rx_nav_relposned.relPosD + _buf.payload_rx_nav_relposned.relPosHPD * 1e-2f) * 1e-2f; // cm -> m
 
-				heading_acc *= M_PI_F / 180.0f; // deg to rad, now in range [0, 2pi]
+			// full length of the relative position vector, in units of cm, is given by relPosLength + (relPosHPLength * 1e-2)
+			_gps_position_relative->position_length = (_buf.payload_rx_nav_relposned.relPosLength + _buf.payload_rx_nav_relposned.relPosHPLength * 1e-2f) * 1e-2f; // cm -> m
 
-				_gps_position->heading_accuracy = heading_acc;
+			_gps_position_relative->heading = _buf.payload_rx_nav_relposned.relPosHeading * 1e-5f * (M_PI_F / 180.f);  // 1e-5 deg -> radians
+			_gps_position_relative->heading_accuracy = _buf.payload_rx_nav_relposned.accHeading * 1e-5f * (M_PI_F / 180.f); // 1e-5 deg -> radians
 
-				UBX_DEBUG("Heading: %.3f rad, acc: %.1f deg, relLen: %.1f cm, relAcc: %.1f cm, valid: %i %i", (double)heading,
-					  (double)heading_acc, (double)rel_length, (double)rel_length_acc, heading_valid, rel_pos_valid);
-			}
+			// Accuracy of relative position in 0.1 mm
+			_gps_position_relative->position_accuracy[0] = _buf.payload_rx_nav_relposned.accN * 1e-4f; // 0.1mm -> m
+			_gps_position_relative->position_accuracy[1] = _buf.payload_rx_nav_relposned.accE * 1e-4f; // 0.1mm -> m
+			_gps_position_relative->position_accuracy[2] = _buf.payload_rx_nav_relposned.accD * 1e-4f; // 0.1mm -> m
+
+			_gps_position_relative->accuracy_length = _buf.payload_rx_nav_relposned.accLength * 1e-4f; // 0.1 mm Accuracy of length of the relative position vector
+
+			// flags
+			// const bool gnssFixOK          = _buf.payload_rx_nav_relposned.flags & (1 << 0); // A valid fix (i.e within DOP & accuracy masks)
+			// const bool diffSoln           = _buf.payload_rx_nav_relposned.flags & (1 << 1); // 1 if differential corrections were applied
+			// const bool relPosValid        = _buf.payload_rx_nav_relposned.flags & (1 << 2); // 1 if relative position components and accuracies are valid and, in moving base mode only, if baseline is valid
+			// // unused                     = _buf.payload_rx_nav_relposned.flags & (1 << 3);
+			// const bool carrSoln           = _buf.payload_rx_nav_relposned.flags & (1 << 4);
+			// const bool isMoving           = _buf.payload_rx_nav_relposned.flags & (1 << 5); // 1 if the receiver is operating in moving base mode
+			// const bool refPosMiss         = _buf.payload_rx_nav_relposned.flags & (1 << 6); // 1 if extrapolated reference position was used to compute moving base solution this epoch
+			// const bool refObsMiss         = _buf.payload_rx_nav_relposned.flags & (1 << 7); // 1 if extrapolated reference observations were used to compute moving base solution this epoch
+			// const bool relPosHeadingValid = _buf.payload_rx_nav_relposned.flags & (1 << 8); // 1 if relPosHeading is valid
+			// const bool relPosNormalized   = _buf.payload_rx_nav_relposned.flags & (1 << 9); // 1 if the components of the relative position vector (including the high-precision parts) are normalized
+
+			_gps_position_relative->gnss_fix_ok                  = _buf.payload_rx_nav_relposned.flags & (1 << 0); // A valid fix (i.e within DOP & accuracy masks)
+			_gps_position_relative->differential_solution        = _buf.payload_rx_nav_relposned.flags & (1 << 1); // 1 if differential corrections were applied
+			_gps_position_relative->relative_position_valid      = _buf.payload_rx_nav_relposned.flags & (1 << 2); // 1 if relative position components and accuracies are valid and, in moving base mode only, if baseline is valid
+			_gps_position_relative->carrier_solution_floating    = _buf.payload_rx_nav_relposned.flags & (1 << 3);
+			_gps_position_relative->carrier_solution_fixed       = _buf.payload_rx_nav_relposned.flags & (1 << 4);
+			_gps_position_relative->moving_base_mode             = _buf.payload_rx_nav_relposned.flags & (1 << 5); // 1 if the receiver is operating in moving base mode
+			_gps_position_relative->reference_position_miss      = _buf.payload_rx_nav_relposned.flags & (1 << 6); // 1 if extrapolated reference position was used to compute moving base solution this epoch
+			_gps_position_relative->reference_observations_miss  = _buf.payload_rx_nav_relposned.flags & (1 << 7); // 1 if extrapolated reference observations were used to compute moving base solution this epoch
+			_gps_position_relative->heading_valid                = _buf.payload_rx_nav_relposned.flags & (1 << 8); // 1 if relPosHeading is valid
+			_gps_position_relative->relative_position_normalized = _buf.payload_rx_nav_relposned.flags & (1 << 9); // 1 if the components of the relative position vector (including the high-precision parts) are normalized
+
+			// TODO: _heading_offset?
+			// UBX_DEBUG("Heading: %.3f rad, acc: %.1f deg, relLen: %.1f cm, relAcc: %.1f cm, valid: %i %i", (double)heading,
+			// 		  (double)heading_acc, (double)rel_length, (double)rel_length_acc, heading_valid, rel_pos_valid);
 
 			ret = 1;
 		}
