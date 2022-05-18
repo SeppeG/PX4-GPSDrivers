@@ -61,7 +61,8 @@
 
 /**** Warning macros, disable to save memory */
 #define SBF_WARN(...)        {GPS_WARN(__VA_ARGS__);}
-#define SBF_DEBUG(...)       {/*GPS_WARN(__VA_ARGS__);*/}
+#define SBF_DEBUG(...)       {GPS_WARN(__VA_ARGS__);}
+#define SBF_SPOOF(...)       {GPS_ERR(__VA_ARGS__);}
 
 GPSDriverSBF::GPSDriverSBF(GPSCallbackPtr callback, void *callback_user, struct sensor_gps_s *gps_position,
 			   satellite_info_s *satellite_info, float heading_offset, float pitch_offset)
@@ -323,12 +324,12 @@ int GPSDriverSBF::receive(unsigned timeout)
 			return -1;
 
 		} else {
-			SBF_DEBUG("Read %d bytes (receive)", ret);
+			// SBF_DEBUG("Read %d bytes (receive)", ret);
 
 			// pass received bytes to the packet decoder
 			for (int i = 0; i < ret; i++) {
 				handled |= parseChar(buf[i]);
-				SBF_DEBUG("parsed %d: 0x%x", i, buf[i]);
+				// SBF_DEBUG("parsed %d: 0x%x", i, buf[i]);
 			}
 		}
 
@@ -661,6 +662,17 @@ int GPSDriverSBF::payloadRxDone()
 		}
 
 		break;
+
+        case SBF_ID_RFStatus: SBF_TRACE_RXMSG("Rx RFStatus");
+            if (_buf.payload_rf_status.flag_spoofing == 1 || _buf.payload_rf_status.flag_osnma_spoofing == 1){
+                _gps_position->jamming_state = 3;
+                SBF_SPOOF("spoofing detected: %u %u", _gps_position->jamming_state, _buf.payload_rf_status.flag_osnma_spoofing)
+            } else if (_buf.payload_rf_status.flag_spoofing == 0 && _buf.payload_rf_status.flag_osnma_spoofing == 0) {
+                _gps_position->jamming_state = 1;
+            } else {
+                _gps_position->jamming_state = 0;
+            }
+            break;
 
 	default:
 		break;

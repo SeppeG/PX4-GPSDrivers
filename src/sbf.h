@@ -63,7 +63,7 @@
 
 #define SBF_DATA_IO "setDataInOut, %s, Auto, SBF\n"
 
-#define SBF_CONFIG "setSBFOutput, Stream1, %s, PVTGeodetic+VelCovGeodetic+DOP+AttEuler+AttCovEuler, msec100\n"
+#define SBF_CONFIG "setSBFOutput, Stream1, %s, PVTGeodetic+VelCovGeodetic+DOP+AttEuler+AttCovEuler+RFStatus, msec100\n"
 
 
 #define SBF_CONFIG_RTCM "" \
@@ -107,6 +107,7 @@
 #define SBF_ID_DOP            4001
 #define SBF_ID_PVTGeodetic    4007
 #define SBF_ID_ChannelStatus  4013
+#define SBF_ID_RFStatus       4092
 #define SBF_ID_VelCovGeodetic 5908
 #define SBF_ID_AttEuler       5938
 #define SBF_ID_AttCovEuler    5939
@@ -299,8 +300,7 @@ typedef struct {
                                             3: Reserved */
 	uint8_t error_aux2: 2;          /**< Bits 2-3: Error code for Main-Aux2 baseline, same definition as bit 0-1. */
 	uint8_t error_reserved: 3;      /**< Bits 4-6: Reserved */
-uint8_t error_not_requested:
-	1; /**< Bit 7: Set when GNSS-based attitude not requested by user. In that case, the other bits are all zero. */
+    uint8_t error_not_requested: 1; /**< Bit 7: Set when GNSS-based attitude not requested by user. In that case, the other bits are all zero. */
 
 	float cov_headhead;             /**< Variance of the heading estimate */
 	float cov_pitchpitch;           /**< Variance of the pitch estimate */
@@ -312,6 +312,37 @@ uint8_t error_not_requested:
 	float cov_pitchroll;            /**< Covariance between Euler angle estimates.
                                          Future functionality. The values are currently set to their Do-Not-Use values. */
 } sbf_payload_att_cov_euler;
+
+typedef struct {
+    uint32_t frequency;             /**< Center frequency of the RF band addressed by this sub-block. */
+
+    uint16_t bandwidth;             /**< Bandwidth of the RF band. */
+
+    uint8_t info_mode: 4;           /**< Bits 0-3: Mode:
+                                        1: This RF band is suppressed by a notch ﬁlter set manually with the command setNotchFiltering .
+                                        2: The receiver detected interference in this band, and successfully canceled it.
+                                        8: The receiver detected interference in this band. No mitigation applied. */
+    uint8_t info_reserved: 2;       /**< Bits 4-5: Reserved */
+    uint8_t info_antenna_id: 2;     /**< Bits 6-7: Antenna ID: 0 for main, 1 for Aux1 and 2 for Aux2 */
+
+    uint8_t padding[16];
+} sbf_sub_rf_band;
+
+
+typedef struct {
+    uint8_t n;                      /**< Number of RF bands for which data is provided in this SBF block, i.e. number of RFBand sub-blocks. */
+
+    uint8_t sb_length;              /**< Length of one sub-block */
+
+    uint8_t flag_spoofing: 1;       /**< Bit 0: Set when the receiver determined that its output (position or raw measurements) may be affected by a spoofer, and may therefore be misleading. This bit is based on a set of built-in tests to check the authenticity of the GNSS signals. Note that this bit may be set even if no interference is detected (i.e. with no associated RFBand sub-blocks). */
+    uint8_t flag_osnma_spoofing: 1; /**< Bit 1: Set when spoofing is detected by Galileo OSNMA. */
+    uint8_t flag_reserved: 6;       /**< Reserved */
+
+    sbf_sub_rf_band rfBand;      /**< A succession of N RFBand sub-blocks, see deﬁnition below */
+    uint8_t reserved[3];            /**< Reserved for future use, to be ignored by decoding software. */
+} sbf_payload_rf_status;
+
+
 
 /* General message and payload buffer union */
 
@@ -343,6 +374,7 @@ uint8_t msg_revision:
 		sbf_payload_dop_t payload_dop;
 		sbf_payload_att_euler payload_att_euler;
 		sbf_payload_att_cov_euler payload_att_cov_euler;
+        sbf_payload_rf_status payload_rf_status;
 	};
 
 	uint8_t padding[16];
